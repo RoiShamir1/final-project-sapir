@@ -1,0 +1,13 @@
+names:
+- knife
+- pistol
+nc: 2
+roboflow:
+  license: Public Domain
+  project: weapons-s4k8n
+  url: https://universe.roboflow.com/wpns/weapons-s4k8n/dataset/1
+  version: 1
+  workspace: wpns
+test: ../test/images
+train: ../train/images
+val: ../valid/images
