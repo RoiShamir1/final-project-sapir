@@ -7,7 +7,8 @@ from ultralytics import YOLO
 # --- הגדרות ---
 # טוען את מודל YOLO11 בגרסת ה-Nano (הקלה ביותר)
 # בפעם הראשונה זה יוריד את הקובץ אוטומטית מהאינטרנט
-model_path = 'yolo11n.pt' 
+# model_path = 'yolo11n.pt'
+model_path = 'runs/detect/drone_weapon_model/weights/best.pt'  # שימוש במודל המאומן
 
 # הגדרת סף ביטחון - רק זיהויים מעל 50% יתקבלו
 CONFIDENCE_THRESHOLD = 0.5
@@ -63,7 +64,7 @@ while True:
 
                 # --- ויזואליזציה (ציור על המסך) ---
                 # צבע אדום לאנשים, ירוק לשאר
-                color = (0, 0, 255) if label == 'person' else (0, 255, 0)
+                color = (0, 0, 255) if label != 'person' else (0, 255, 0)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
