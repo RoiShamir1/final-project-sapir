@@ -1,94 +1,106 @@
 import cv2
-import json
 import datetime
 import torch
 from ultralytics import YOLO
 
 # --- הגדרות ---
-# טוען את מודל YOLO11 בגרסת ה-Nano (הקלה ביותר)
-# בפעם הראשונה זה יוריד את הקובץ אוטומטית מהאינטרנט
-# model_path = 'yolo11n.pt'
-model_path = 'runs/detect/drone_weapon_model/weights/best.pt'  # שימוש במודל המאומן
+# טוען שני מודלים במקביל!
+# 1. המודל החדש שאימנת (נשקים)
+path_custom = 'runs/detect/drone_final_v1/weights/best.pt' 
+# 2. המודל הכללי (אנשים)
+path_general = 'yolo11n.pt'                                  
 
-# הגדרת סף ביטחון - רק זיהויים מעל 50% יתקבלו
-CONFIDENCE_THRESHOLD = 0.5
+# ספי ביטחון
+CONF_WEAPON = 0.4  # לנשקים (נהיה רגישים)
+CONF_PERSON = 0.5  # לאנשים (נדרוש וודאות)
 
-# בחירת התקן ריצה (הכרטיס מסך שלך)
+# בדיקת חומרה
 device = 0 if torch.cuda.is_available() else 'cpu'
-print(f"🚀 Running inference on: {torch.cuda.get_device_name(0) if device == 0 else 'CPU'}")
+print(f"🚀 Running dual-inference on: {torch.cuda.get_device_name(0) if device == 0 else 'CPU'}")
 
-# אתחול המודל
-model = YOLO(model_path)
-
-# פתיחת מצלמה (0 = מצלמת רשת מובנית)
-# אם תרצה לבדוק על סרטון וידאו, החלף את 0 בשם הקובץ, למשל: "test_video.mp4"
-cap = cv2.VideoCapture(0)
-
-if not cap.isOpened():
-    print("Error: Could not open video source.")
+# אתחול המודלים
+print("⏳ Loading Models... (This might take a moment)")
+try:
+    model_weapons = YOLO(path_custom) # המומחה לנשק
+    model_general = YOLO(path_general) # המומחה לאנשים
+    print("✅ Models Loaded Successfully!")
+except Exception as e:
+    print(f"❌ Error loading models: {e}")
+    print(f"Verify that this file exists: {path_custom}")
     exit()
 
-print("🎥 Starting Drone View Simulation... Press 'q' to exit.")
+cap = cv2.VideoCapture(0) # למצלמה
+
+# רשימת צבעים לזיהוי מהיר
+COLOR_THREAT = (0, 0, 255)   # אדום
+COLOR_SAFE = (0, 255, 0)     # ירוק
+COLOR_WARN = (0, 165, 255)   # כתום
+
+print("🎥 Starting Surveillance System... Press 'q' to exit.")
 
 while True:
     success, frame = cap.read()
     if not success:
         break
 
-    # --- שלב הזיהוי (Inference) ---
-    # אנו שולחים את הפריים למודל ומבקשים שירוץ על ה-GPU (device=0)
-    results = model(frame, device=device, verbose=False)
-
     detected_objects = []
 
-    # --- עיבוד התוצאות ---
-    for r in results:
-        boxes = r.boxes
-        for box in boxes:
+    # --- שלב 1: זיהוי נשקים (המודל שלך) ---
+    results_weapons = model_weapons(frame, device=device, verbose=False, conf=CONF_WEAPON)
+    
+    for r in results_weapons:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            label = model_weapons.names[int(box.cls[0])]
             conf = float(box.conf[0])
             
-            if conf > CONFIDENCE_THRESHOLD:
-                # המרת קוד המחלקה (מספר) לשם (טקסט)
-                cls_id = int(box.cls[0])
-                label = model.names[cls_id]
-                
-                # קואורדינטות הריבוע (Bounding Box)
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                
-                # הוספה לרשימת האובייקטים שנמצאו
-                detected_objects.append({
-                    "label": label,
-                    "confidence": round(conf, 2),
-                    "bbox": [x1, y1, x2, y2]
-                })
+            # הוספה לרשימה כ"איום"
+            detected_objects.append({
+                "label": label, 
+                "conf": conf, 
+                "bbox": [x1, y1, x2, y2],
+                "type": "threat" 
+            })
 
-                # --- ויזואליזציה (ציור על המסך) ---
-                # צבע אדום לאנשים, ירוק לשאר
-                color = (0, 0, 255) if label != 'person' else (0, 255, 0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    # --- שלב 2: זיהוי אנשים (המודל הכללי) ---
+    # classes=[0] -> מחפש רק Person
+    results_people = model_general(frame, device=device, verbose=False, conf=CONF_PERSON, classes=[0])
 
-    # --- הדמיית שליחה לענן ---
-    # אם זוהה אובייקט רלוונטי (כרגע כל אובייקט, בהמשך נסנן רק נשק/אדם)
-    if detected_objects:
-        alert_payload = {
-            "drone_id": "alpha_01",
-            "timestamp": datetime.datetime.now().isoformat(),
-            "location": {"lat": 32.0853, "lon": 34.7818, "alt": 50}, # מיקום פיקטיבי
-            "objects_count": len(detected_objects),
-            "detections": detected_objects
-        }
+    for r in results_people:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            # הוספה לרשימה כ"אזרח"
+            detected_objects.append({
+                "label": "person", 
+                "conf": float(box.conf[0]), 
+                "bbox": [x1, y1, x2, y2],
+                "type": "civilian" 
+            })
+
+    # --- שלב 3: ציור על המסך ---
+    for obj in detected_objects:
+        x1, y1, x2, y2 = obj["bbox"]
+        label = obj["label"]
+        conf = obj["conf"]
         
-        # כרגע רק מדפיסים את ה-JSON לטרמינל כדי לראות שזה עובד
-        # בשבוע הבא נחליף את השורה הזו בשליחה אמיתית לשרת
-        print(f"📡 Sending Data to Cloud: Found {len(detected_objects)} objects")
-        # print(json.dumps(alert_payload, indent=2)) # תבטל הערה זו אם תרצה לראות את כל המידע
+        # בחירת צבע לפי סוג האיום
+        color = COLOR_THREAT if obj["type"] == "threat" else COLOR_SAFE
+        
+        # מסגרת
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        
+        # כיתוב רקע (כדי שיהיה קריא)
+        label_text = f"{label} {conf:.0%}"
+        t_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+        cv2.rectangle(frame, (x1, y1 - 20), (x1 + t_size[0], y1), color, -1)
+        
+        # טקסט
+        cv2.putText(frame, label_text, (x1, y1 - 5), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-    # הצגת הוידאו על המסך
-    cv2.imshow("Drone View (YOLO11n + RTX 3050)", frame)
+    # הצגת הוידאו
+    cv2.imshow("Sapir College Final Project - Threat Detection", frame)
 
-    # יציאה בלחיצה על 'q'
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
