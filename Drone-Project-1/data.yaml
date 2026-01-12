@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 6
+names: ['Knife', 'Rifle', 'knife', 'pistol', 'wires', 'wires-only']
+
+roboflow:
+  workspace: droneprojectsapir
+  project: drone-project-wvj7h
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/droneprojectsapir/drone-project-wvj7h/dataset/1
