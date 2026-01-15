@@ -24,3 +24,7 @@ class Event:
         """פונקציית עזר להמרת האירוע ל-JSON תקני בשורה אחת"""
         # הסרנו את indent=4 כדי שכל האירוע יהיה בשורה אחת
         return json.dumps(asdict(self), default=str)
+    
+    def to_dict(self):
+        """מחזיר מילון (בשביל MongoDB)"""
+        return asdict(self)
