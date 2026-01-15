@@ -21,5 +21,6 @@ class Event:
     event_type: str = "routine" # routine / alert
 
     def to_json(self):
-        """פונקציית עזר להמרת האירוע ל-JSON תקני"""
-        return json.dumps(asdict(self), default=str, indent=4)
+        """פונקציית עזר להמרת האירוע ל-JSON תקני בשורה אחת"""
+        # הסרנו את indent=4 כדי שכל האירוע יהיה בשורה אחת
+        return json.dumps(asdict(self), default=str)
