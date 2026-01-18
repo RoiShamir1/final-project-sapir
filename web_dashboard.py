@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import time
 import os
+import plotly.express as px
 
 # --- הגדרות ---
 LOG_FILE = "events_log.json"

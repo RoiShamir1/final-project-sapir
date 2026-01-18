@@ -22,7 +22,7 @@ CURRENT_LOCATION = {"lat": 32.0853, "lon": 34.7818, "alt": 50}
 LOG_FILE = "events_log.json"
 
 # הגדרות רגישות לזיהוי נשק
-CONF_THRESHOLD_WEAPON = 0.6
+CONF_THRESHOLD_WEAPON = 0.5
 REQUIRED_CONSECUTIVE_FRAMES = 5
 
 # --- הגדרות חדשות: התנהגות חשודה ---
