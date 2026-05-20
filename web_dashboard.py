@@ -47,7 +47,7 @@ def load_data():
     return data
 
 # --- כותרת הדשבורד ---
-st.title("🦅 Sentinel Drone - Command Center")
+st.title("🦅 Argus Drone - Command Center")
 st.markdown("Real-time surveillance and threat detection dashboard")
 
 # --- מנגנון רענון אוטומטי ---

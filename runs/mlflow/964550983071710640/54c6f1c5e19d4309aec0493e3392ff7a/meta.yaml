@@ -1,0 +1,14 @@
+artifact_uri: file:///C:/Users/roish/Documents/GitHub/final-project-sapir/runs/mlflow/964550983071710640/54c6f1c5e19d4309aec0493e3392ff7a/artifacts
+end_time: 1778524866347
+entry_point_name: ''
+experiment_id: '964550983071710640'
+lifecycle_stage: active
+run_id: 54c6f1c5e19d4309aec0493e3392ff7a
+run_name: drone_v3
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1778513766991
+status: 3
+tags: []
+user_id: roish

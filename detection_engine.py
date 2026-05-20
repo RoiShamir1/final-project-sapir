@@ -3,12 +3,11 @@ from ultralytics import YOLO
 from typing import List
 from models import ObjectDetection
 
+
 class DetectionEngine:
     def __init__(self, weapon_model_path: str, conf_weapon: float = 0.4, conf_person: float = 0.5):
-        # הורדתי את ברירת המחדל של הנשק ל-0.4 ליתר ביטחון
         self.device = 0 if torch.cuda.is_available() else 'cpu'
         print(f"🚀 Initializing Engine on: {self.device}")
-
         self.conf_weapon = conf_weapon
         self.conf_person = conf_person
 
@@ -24,16 +23,15 @@ class DetectionEngine:
     def detect(self, frame) -> List[ObjectDetection]:
         detections = []
 
-        # 1. זיהוי נשקים (עם התיקון לחפיפות)
+        # זיהוי נשקים עם המודל המאומן שלנו
         results_weapons = self.model_weapons(
-            frame, 
-            device=self.device, 
-            verbose=False, 
+            frame,
+            device=self.device,
+            verbose=False,
             conf=self.conf_weapon,
-            agnostic_nms=False,  # <--- חשוב! מונע מחיקת אקדח שנמצא "בתוך" אדם
-            iou=0.45             # <--- מאפשר חפיפה גבוהה יותר בין ריבועים
+            agnostic_nms=False,
+            iou=0.45
         )
-        
         for r in results_weapons:
             for box in r.boxes:
                 detections.append(ObjectDetection(
@@ -43,8 +41,14 @@ class DetectionEngine:
                     type="threat"
                 ))
 
-        # 2. זיהוי אנשים
-        results_people = self.model_general(frame, device=self.device, verbose=False, conf=self.conf_person, classes=[0])
+        # זיהוי אנשים עם מודל COCO כללי
+        results_people = self.model_general(
+            frame,
+            device=self.device,
+            verbose=False,
+            conf=self.conf_person,
+            classes=[0]
+        )
         for r in results_people:
             for box in r.boxes:
                 detections.append(ObjectDetection(
