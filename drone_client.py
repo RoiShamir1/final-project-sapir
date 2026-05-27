@@ -1,7 +1,8 @@
 import cv2
 import datetime
-import json
 import numpy as np
+import threading
+import time
 from detection_engine import DetectionEngine
 from models import Event, ObjectDetection
 from db_connector import MongoDBClient
@@ -16,20 +17,87 @@ if not MONGO_URI:
     exit()
 
 # ─── הגדרות ───────────────────────────────────────────────────────────────────
-WEAPON_MODEL_PATH = 'runs/detect/drone_v3/weights/best.pt'
-
-# ⚠️  הרץ ipconfig ב-cmd → IPv4 של ה-Wi-Fi adapter
-# הרחפן ישדר ל: rtmp://<IP_שלך>/live/drone
-RTMP_URL = "rtmp://10.186.183.143/live/argus"   # ← שנה ל-IP האמיתי שלך
+# WEAPON_MODEL_PATH = 'runs/detect/drone_v4/weights/best.pt'
+WEAPON_MODEL_PATH = 'runs/detect/drone_v5/weights/best.pt'
+RTMP_URL = "rtmp://10.208.8.143/live/argus"   # ← ה-IP שלך
 
 DRONE_ID = "Alpha_01"
 CURRENT_LOCATION = {"lat": 32.0853, "lon": 34.7818, "alt": 50}
 LOG_FILE = "events_log.json"
 
 CONF_THRESHOLD_WEAPON = 0.5
+CONF_THRESHOLD_PERSON = 0.5
 REQUIRED_CONSECUTIVE_FRAMES = 5
-CROUCHING_ASPECT_RATIO_THRESHOLD = 1.2
-REQUIRED_CROUCHING_FRAMES = 20
+# כמה פריימים רצופים ללא נשק נדרשים כדי לסגור התרעה (ולאפשר התרעה חדשה)
+FRAMES_TO_CLEAR_ALERT = 15
+
+
+def get_screen_size():
+    """גודל המסך של המשתמש (Windows). אם נכשל — ברירת מחדל 1920x1080."""
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+        return (ctypes.windll.user32.GetSystemMetrics(0),
+                ctypes.windll.user32.GetSystemMetrics(1))
+    except Exception:
+        return 1920, 1080
+
+
+# ─── קורא פריימים ב-Thread נפרד לצמצום latency ──────────────────────────────
+class StreamReader:
+    """
+    Thread שרץ ברקע וכל הזמן שואב פריימים מה-RTMP.
+    הלולאה הראשית תמיד מקבל את הפריים הכי עדכני — ללא המתנה.
+    """
+    def __init__(self, url: str):
+        self.url = url
+        self.frame = None
+        self.success = False
+        self.running = False
+        self._lock = threading.Lock()
+        self._cap = None
+
+    def _open(self):
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            "fflags;nobuffer|flags;low_delay|framedrop;1|bufsize;0"
+        )
+        cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap if cap.isOpened() else None
+
+    def start(self) -> bool:
+        print(f"📡 Connecting to RTMP stream: {self.url}")
+        self._cap = self._open()
+        if self._cap is None:
+            print("❌ Could not open RTMP stream.")
+            return False
+        print("✅ RTMP stream connected!")
+        self.running = True
+        threading.Thread(target=self._reader_loop, daemon=True).start()
+        return True
+
+    def _reader_loop(self):
+        """רץ ברקע — תמיד שואב את הפריים הכי חדש"""
+        while self.running:
+            if self._cap is None or not self._cap.isOpened():
+                print("⚠️  Stream lost. Reconnecting...")
+                time.sleep(2)
+                self._cap = self._open()
+                continue
+            success, frame = self._cap.read()
+            with self._lock:
+                self.success = success
+                self.frame = frame
+
+    def read(self):
+        """מחזיר את הפריים הכי עדכני שנשמר ב-thread הרקע"""
+        with self._lock:
+            return self.success, self.frame.copy() if self.frame is not None else None
+
+    def stop(self):
+        self.running = False
+        if self._cap:
+            self._cap.release()
 
 
 def save_event_to_file(event: Event):
@@ -41,121 +109,69 @@ def save_event_to_file(event: Event):
         print(f"❌ Failed to save event: {e}")
 
 
-def detect_suspicious_behavior(detections, frame_shape):
-    suspicious_people = []
-    frame_h, frame_w, _ = frame_shape
-
-    for obj in detections:
-        if obj.label == "person":
-            x1, y1, x2, y2 = obj.bbox
-            if y2 > frame_h - 10:
-                continue
-            height = y2 - y1
-            width = x2 - x1
-            if width == 0:
-                continue
-            ratio = height / width
-            if ratio < CROUCHING_ASPECT_RATIO_THRESHOLD:
-                suspicious_people.append(ObjectDetection(
-                    label="Suspect (Crouching)",
-                    confidence=obj.confidence,
-                    bbox=obj.bbox,
-                    type="behavior_threat"
-                ))
-    return suspicious_people
+def _text(img, txt, org, scale, color, thickness=1):
+    """כותב טקסט חלק (anti-aliased) — לקריאוּת טובה יותר."""
+    cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                color, thickness, cv2.LINE_AA)
 
 
-def draw_dashboard(frame, last_event, fps, behavior_counter):
+def draw_dashboard(frame, last_event, fps, person_count, weapon_count):
     h, w, _ = frame.shape
     panel_width = 400
+    x = w + 25  # שוליים שמאליים אחידים לכל הטקסט בפאנל
     dashboard = np.zeros((h, w + panel_width, 3), dtype=np.uint8)
     dashboard[0:h, 0:w] = frame
-    dashboard[0:h, w:w + panel_width] = (50, 50, 50)
+    dashboard[0:h, w:w + panel_width] = (38, 38, 38)
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(dashboard, "SYSTEM STATUS", (w + 20, 40), font, 0.8, (255, 255, 255), 2)
-    cv2.putText(dashboard, f"FPS: {fps:.1f}", (w + 20, 80), font, 0.6, (200, 200, 200), 1)
-    cv2.putText(dashboard, "Engine: YOLO v3", (w + 20, 100), font, 0.5, (0, 200, 255), 1)
+    # ── כותרת ─────────────────────────────────────────────────────────────
+    _text(dashboard, "SYSTEM STATUS", (x, 50), 0.85, (255, 255, 255), 2)
+    cv2.line(dashboard, (x, 65), (w + panel_width - 25, 65), (90, 90, 90), 1)
 
-    if behavior_counter > 0:
-        bar_len = int((behavior_counter / REQUIRED_CROUCHING_FRAMES) * 200)
-        cv2.putText(dashboard, "Analyzing Behavior...", (w + 20, 120), font, 0.5, (0, 255, 255), 1)
-        cv2.rectangle(dashboard, (w + 20, 130), (w + 20 + bar_len, 140), (0, 255, 255), -1)
+    # ── מצב כללי ──────────────────────────────────────────────────────────
+    _text(dashboard, f"FPS: {fps:.1f}", (x, 100), 0.6, (210, 210, 210), 1)
+    _text(dashboard, "Model: V4 + YOLO26 Base", (x, 128), 0.55, (0, 200, 255), 1)
 
-    cv2.line(dashboard, (w + 20, 150), (w + 380, 150), (200, 200, 200), 1)
+    _text(dashboard, f"Persons: {person_count}", (x, 165), 0.7, (0, 255, 0), 2)
+    weapon_color = (0, 0, 255) if weapon_count > 0 else (180, 180, 180)
+    _text(dashboard, f"Weapons: {weapon_count}", (x, 198), 0.7, weapon_color, 2)
 
+    cv2.line(dashboard, (x, 220), (w + panel_width - 25, 220), (90, 90, 90), 1)
+
+    # ── אזור התרעה ────────────────────────────────────────────────────────
     if last_event:
-        cv2.circle(dashboard, (w + 40, 190), 15, (0, 0, 255), -1)
-        cv2.circle(dashboard, (w + 40, 190), 17, (255, 255, 255), 2)
-        cv2.putText(dashboard, "ALERT ACTIVE", (w + 70, 200), font, 0.8, (0, 0, 255), 2)
+        cv2.circle(dashboard, (x + 15, 262), 15, (0, 0, 255), -1)
+        cv2.circle(dashboard, (x + 15, 262), 17, (255, 255, 255), 2)
+        _text(dashboard, "WEAPON ALERT", (x + 45, 270), 0.85, (0, 0, 255), 2)
 
-        y_pos = 240
-        line_gap = 30
+        y = 312
         t_str = last_event.timestamp.split("T")[1].split(".")[0]
-        cv2.putText(dashboard, f"Time: {t_str}", (w + 20, y_pos), font, 0.6, (255, 255, 255), 1)
-        y_pos += line_gap
-        cv2.putText(dashboard, "Detections:", (w + 20, y_pos), font, 0.7, (0, 255, 255), 1)
-        y_pos += line_gap
+        _text(dashboard, f"Time: {t_str}", (x, y), 0.65, (255, 255, 255), 1)
+        y += 38
+        _text(dashboard, "Detected weapons:", (x, y), 0.65, (0, 140, 255), 2)
+        y += 38
         for det in last_event.detections:
-            label_color = (0, 0, 255) if det.type == "threat" else (255, 0, 255)
-            cv2.putText(dashboard, f"> {det.label} ({det.confidence:.0%})",
-                        (w + 20, y_pos), font, 0.6, label_color, 1)
-            y_pos += line_gap
+            _text(dashboard, f"> {det.label}  ({det.confidence:.0%})",
+                  (x + 10, y), 0.65, (0, 80, 255), 2)
+            y += 34
     else:
-        cv2.circle(dashboard, (w + 40, 190), 15, (0, 255, 0), -1)
-        cv2.putText(dashboard, "NO THREATS", (w + 70, 200), font, 0.8, (0, 255, 0), 2)
+        cv2.circle(dashboard, (x + 15, 262), 15, (0, 220, 0), -1)
+        cv2.circle(dashboard, (x + 15, 262), 17, (255, 255, 255), 2)
+        _text(dashboard, "NO THREATS", (x + 45, 270), 0.85, (0, 220, 0), 2)
 
     return dashboard
 
 
-def draw_detections_on_frame(frame, detections, suspicious_people):
-    for obj in detections:
+def draw_detections_on_frame(frame, weapons, persons):
+    for obj in persons:
         x1, y1, x2, y2 = obj.bbox
-        color = (0, 0, 255) if obj.type == "threat" else (0, 255, 0)
-        label = obj.label if obj.type == "threat" else "Person"
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-    for obj in suspicious_people:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        _text(frame, f"Person {obj.confidence:.0%}",
+              (x1, y1 - 10), 0.6, (0, 255, 0), 2)
+    for obj in weapons:
         x1, y1, x2, y2 = obj.bbox
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 3)
-        cv2.putText(frame, "SUSPICIOUS BEHAVIOR", (x1, y1 - 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-
-
-def read_latest_frame(cap):
-    """משליך פריימים ישנים שנצברו בבאפר — לוקח רק את הכי עדכני"""
-    cap.grab()
-    cap.grab()
-    cap.grab()
-    success, frame = cap.retrieve()
-    return success, frame
-
-
-def open_stream():
-    """פותח את ה-RTMP stream עם הגדרות latency מינימלי"""
-    print(f"📡 Connecting to RTMP stream: {RTMP_URL}")
-
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-        "fflags;nobuffer|"
-        "flags;low_delay|"
-        "framedrop;1|"
-        "bufsize;0"
-    )
-
-    cap = cv2.VideoCapture(RTMP_URL, cv2.CAP_FFMPEG)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-    if not cap.isOpened():
-        print("❌ Could not open RTMP stream.")
-        print("   בדוק:")
-        print("   1. mediamtx.exe רץ?")
-        print("   2. הרחפן מחובר ומשדר?")
-        print(f"   3. ה-IP בהגדרות הרחפן תואם: {RTMP_URL}")
-        return None
-
-    print("✅ RTMP stream connected!")
-    return cap
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        _text(frame, f"{obj.label} {obj.confidence:.0%}",
+              (x1, y1 - 10), 0.6, (0, 0, 255), 2)
 
 
 def main():
@@ -163,7 +179,7 @@ def main():
         engine = DetectionEngine(
             weapon_model_path=WEAPON_MODEL_PATH,
             conf_weapon=CONF_THRESHOLD_WEAPON,
-            conf_person=0.5
+            conf_person=CONF_THRESHOLD_PERSON
         )
     except Exception:
         print("❌ Failed to start engine.")
@@ -172,74 +188,88 @@ def main():
     cloud_db = MongoDBClient(MONGO_URI)
     cloud_db.connect()
 
-    cap = open_stream()
-    if cap is None:
+    # ── פתיחת stream ב-thread נפרד ───────────────────────────────────────────
+    stream = StreamReader(RTMP_URL)
+    if not stream.start():
+        print("❌ Cannot start stream.")
         return
 
-    last_report_time = datetime.datetime.now()
+    # המתנה קצרה עד שה-thread הרקע יתחיל לקבל פריימים
+    time.sleep(1.0)
+
     consecutive_weapon_frames = 0
-    consecutive_behavior_frames = 0
+    no_weapon_frames = 0
+    alert_active = False          # האם התרעה פעילה כרגע (מונע כפילויות)
     latest_event_display = None
-    prev_frame_time = datetime.datetime.now().timestamp()
+    prev_frame_time = time.time()
+
+    # ── חלון רספונסיבי שמותאם למסך המשתמש ───────────────────────────────────
+    screen_w, screen_h = get_screen_size()
+    window_name = "Drone Commander Dashboard"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    window_initialized = False
 
     print(f"🎥 Surveillance Active. Logging to: {LOG_FILE}")
 
     while True:
-        success, frame = read_latest_frame(cap)
+        success, frame = stream.read()
 
-        if not success:
-            print("⚠️  Stream lost. Reconnecting in 3 seconds...")
-            cap.release()
-            cv2.waitKey(3000)
-            cap = open_stream()
-            if cap is None:
-                break
+        if not success or frame is None:
+            time.sleep(0.05)
             continue
 
-        new_frame_time = datetime.datetime.now().timestamp()
-        fps = 1 / max(new_frame_time - prev_frame_time, 1e-6)
-        prev_frame_time = new_frame_time
+        # FPS
+        now = time.time()
+        fps = 1 / max(now - prev_frame_time, 1e-6)
+        prev_frame_time = now
 
-        detections = engine.detect(frame)
-        suspicious_behavior_list = detect_suspicious_behavior(detections, frame.shape)
+        # ── זיהוי ────────────────────────────────────────────────────────────
+        weapons, persons = engine.detect(frame)
 
-        weapons_in_frame = [d for d in detections if d.type == "threat"]
-        consecutive_weapon_frames = consecutive_weapon_frames + 1 if weapons_in_frame else 0
-        consecutive_behavior_frames = consecutive_behavior_frames + 1 if suspicious_behavior_list else 0
+        # ── לוגיקת נשקים בלבד → Event ────────────────────────────────────────
+        if weapons:
+            consecutive_weapon_frames += 1
+            no_weapon_frames = 0
+        else:
+            consecutive_weapon_frames = 0
+            no_weapon_frames += 1
+            # הנשק נעלם מספיק זמן → סוגרים את ההתרעה ומאפשרים אירוע חדש בהמשך
+            if no_weapon_frames >= FRAMES_TO_CLEAR_ALERT:
+                alert_active = False
 
-        current_time = datetime.datetime.now()
-        active_threats = []
-        event_reason = ""
-
-        if consecutive_weapon_frames >= REQUIRED_CONSECUTIVE_FRAMES:
-            active_threats.extend(weapons_in_frame)
-            event_reason = "weapon_detected"
-
-        if consecutive_behavior_frames >= REQUIRED_CROUCHING_FRAMES:
-            active_threats.extend(suspicious_behavior_list)
-            event_reason = (event_reason + "+suspicious_behavior") if event_reason else "suspicious_behavior"
-
-        if active_threats and (current_time - last_report_time).total_seconds() > 1.0:
+        # רושמים אירוע פעם אחת בלבד לכל הופעת נשק רציפה (ללא כפילויות)
+        if consecutive_weapon_frames >= REQUIRED_CONSECUTIVE_FRAMES and not alert_active:
             event = Event(
                 drone_id=DRONE_ID,
-                timestamp=current_time.isoformat(),
+                timestamp=datetime.datetime.now().isoformat(),
                 location=CURRENT_LOCATION,
-                detections=active_threats,
+                detections=weapons,
                 event_type="alert"
             )
             save_event_to_file(event)
             cloud_db.insert_event(event.to_dict())
             latest_event_display = event
-            last_report_time = current_time
+            alert_active = True
 
-        draw_detections_on_frame(frame, detections, suspicious_behavior_list)
-        final_display = draw_dashboard(frame, latest_event_display, fps, consecutive_behavior_frames)
-        cv2.imshow("Drone Commander Dashboard", final_display)
+        # ── ציור ─────────────────────────────────────────────────────────────
+        draw_detections_on_frame(frame, weapons, persons)
+        final_display = draw_dashboard(frame, latest_event_display, fps,
+                                       len(persons), len(weapons))
+
+        # ── התאמת גודל החלון למסך פעם אחת, תוך שמירה על יחס הגובה-רוחב ──────────
+        if not window_initialized:
+            dh, dw = final_display.shape[:2]
+            margin = 0.9  # להשאיר מקום לשורת המשימות ולמסגרת החלון
+            scale = min(screen_w * margin / dw, screen_h * margin / dh, 1.0)
+            cv2.resizeWindow(window_name, int(dw * scale), int(dh * scale))
+            window_initialized = True
+
+        cv2.imshow(window_name, final_display)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
+    stream.stop()
     cv2.destroyAllWindows()
 
 
