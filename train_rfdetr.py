@@ -10,35 +10,31 @@ train_rfdetr.py
 """
 
 from roboflow import Roboflow
-from rfdetr import RFDETRBase          # אפשר גם RFDETRMedium / RFDETRSmall
+from rfdetr import RFDETRBase         
 import os
 
-# ─── 1. הורדת הדאטה-סט מ-Roboflow ─────────────────────────────────────────
-# ⚠️  שים לב: הפורמט הוא "coco" ולא "yolov11" כמו פעם!
 rf = Roboflow(api_key="kM2ZUfe7R97bZAn0ycWZ")
 project = rf.workspace("droneprojectsapir").project("drone-project-wvj7h")
 version = project.version(1)
-dataset = version.download("coco")          # <--- פורמט COCO JSON
+dataset = version.download("coco")          
 
-DATASET_DIR = dataset.location             # נתיב לתיקייה שמכילה train/ valid/ test/
+DATASET_DIR = dataset.location             
 print(f"📂 Dataset location: {DATASET_DIR}")
 
-# ─── 2. בחירת גודל המודל ───────────────────────────────────────────────────
-# RF-DETR-L מומלץ לפרויקט: דיוק גבוה, עדיין real-time ב-RTX 3050
-# אם הזיכרון קצר — החלף ל-RFDETRMedium
+
 
 def train():
     model = RFDETRBase()
 
-# ─── 3. אימון ──────────────────────────────────────────────────────────────
+
     model.train(
         dataset_dir=DATASET_DIR,
         epochs=50,
-        batch_size=8,               # RTX 3050 (4GB) - אם נגמר זיכרון: batch_size=4
-        grad_accum_steps=2,         # מדמה batch_size=16 בלי לטעון יותר לזיכרון
+        batch_size=8,               
+        grad_accum_steps=2,         
         lr=1e-4,
         output_dir="runs/rfdetr/drone_v1",
-        checkpoint_interval=5,    # שמירה כל 5 epochs (אופציונלי)
+        checkpoint_interval=5,   
     )
 
 

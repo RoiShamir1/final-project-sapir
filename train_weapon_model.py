@@ -7,10 +7,8 @@ project = rf.workspace("wpns").project("weapons-s4k8n")
 version = project.version(1)
 dataset = version.download("yolov8")
 
-# שים לב: המשתנה 'dataset' מחזיק עכשיו את המיקום של הקבצים במחשב שלך
-# אם הורדת ידנית כקובץ ZIP וחילצת, פשוט תכתוב את הנתיב לקובץ data.yaml ידנית למטה
-# דוגמה: data_path = "C:/Users/Roi/Datasets/Weapons/data.yaml"
-data_path = f"{dataset.location}/data.yaml" # האם אני צריך לשנות את זה?
+
+data_path = f"{dataset.location}/data.yaml"
 
 def train_model():
     device = 0 if torch.cuda.is_available() else 'cpu'

@@ -16,10 +16,9 @@ if not MONGO_URI:
     print("❌ ERROR: MONGO_URI not found in .env file!")
     exit()
 
-# ─── הגדרות ───────────────────────────────────────────────────────────────────
 # WEAPON_MODEL_PATH = 'runs/detect/drone_v4/weights/best.pt'
 WEAPON_MODEL_PATH = 'runs/detect/drone_v5/weights/best.pt'
-RTMP_URL = "rtmp://10.208.8.143/live/argus"   # ← ה-IP שלך
+RTMP_URL = "rtmp://10.208.8.143/live/argus"   # IP
 
 DRONE_ID = "Alpha_01"
 CURRENT_LOCATION = {"lat": 32.0853, "lon": 34.7818, "alt": 50}
@@ -27,13 +26,15 @@ LOG_FILE = "events_log.json"
 
 CONF_THRESHOLD_WEAPON = 0.5
 CONF_THRESHOLD_PERSON = 0.5
-REQUIRED_CONSECUTIVE_FRAMES = 5
-# כמה פריימים רצופים ללא נשק נדרשים כדי לסגור התרעה (ולאפשר התרעה חדשה)
+
+DETECTION_WINDOW_SIZE = 8
+DETECTION_WINDOW_HITS = 4
+
 FRAMES_TO_CLEAR_ALERT = 15
 
 
 def get_screen_size():
-    """גודל המסך של המשתמש (Windows). אם נכשל — ברירת מחדל 1920x1080."""
+    
     try:
         import ctypes
         ctypes.windll.user32.SetProcessDPIAware()
@@ -43,12 +44,8 @@ def get_screen_size():
         return 1920, 1080
 
 
-# ─── קורא פריימים ב-Thread נפרד לצמצום latency ──────────────────────────────
 class StreamReader:
-    """
-    Thread שרץ ברקע וכל הזמן שואב פריימים מה-RTMP.
-    הלולאה הראשית תמיד מקבל את הפריים הכי עדכני — ללא המתנה.
-    """
+    
     def __init__(self, url: str):
         self.url = url
         self.frame = None
@@ -77,7 +74,7 @@ class StreamReader:
         return True
 
     def _reader_loop(self):
-        """רץ ברקע — תמיד שואב את הפריים הכי חדש"""
+        
         while self.running:
             if self._cap is None or not self._cap.isOpened():
                 print("⚠️  Stream lost. Reconnecting...")
@@ -90,7 +87,7 @@ class StreamReader:
                 self.frame = frame
 
     def read(self):
-        """מחזיר את הפריים הכי עדכני שנשמר ב-thread הרקע"""
+        
         with self._lock:
             return self.success, self.frame.copy() if self.frame is not None else None
 
@@ -110,7 +107,7 @@ def save_event_to_file(event: Event):
 
 
 def _text(img, txt, org, scale, color, thickness=1):
-    """כותב טקסט חלק (anti-aliased) — לקריאוּת טובה יותר."""
+    
     cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
                 color, thickness, cv2.LINE_AA)
 
@@ -118,16 +115,16 @@ def _text(img, txt, org, scale, color, thickness=1):
 def draw_dashboard(frame, last_event, fps, person_count, weapon_count):
     h, w, _ = frame.shape
     panel_width = 400
-    x = w + 25  # שוליים שמאליים אחידים לכל הטקסט בפאנל
+    x = w + 25  
     dashboard = np.zeros((h, w + panel_width, 3), dtype=np.uint8)
     dashboard[0:h, 0:w] = frame
     dashboard[0:h, w:w + panel_width] = (38, 38, 38)
 
-    # ── כותרת ─────────────────────────────────────────────────────────────
+    
     _text(dashboard, "SYSTEM STATUS", (x, 50), 0.85, (255, 255, 255), 2)
     cv2.line(dashboard, (x, 65), (w + panel_width - 25, 65), (90, 90, 90), 1)
 
-    # ── מצב כללי ──────────────────────────────────────────────────────────
+    
     _text(dashboard, f"FPS: {fps:.1f}", (x, 100), 0.6, (210, 210, 210), 1)
     _text(dashboard, "Model: V4 + YOLO26 Base", (x, 128), 0.55, (0, 200, 255), 1)
 
@@ -137,7 +134,7 @@ def draw_dashboard(frame, last_event, fps, person_count, weapon_count):
 
     cv2.line(dashboard, (x, 220), (w + panel_width - 25, 220), (90, 90, 90), 1)
 
-    # ── אזור התרעה ────────────────────────────────────────────────────────
+    
     if last_event:
         cv2.circle(dashboard, (x + 15, 262), 15, (0, 0, 255), -1)
         cv2.circle(dashboard, (x + 15, 262), 17, (255, 255, 255), 2)
@@ -188,22 +185,23 @@ def main():
     cloud_db = MongoDBClient(MONGO_URI)
     cloud_db.connect()
 
-    # ── פתיחת stream ב-thread נפרד ───────────────────────────────────────────
+    
     stream = StreamReader(RTMP_URL)
     if not stream.start():
         print("❌ Cannot start stream.")
         return
 
-    # המתנה קצרה עד שה-thread הרקע יתחיל לקבל פריימים
+    
     time.sleep(1.0)
 
-    consecutive_weapon_frames = 0
+    from collections import deque
+    weapon_history = deque(maxlen=DETECTION_WINDOW_SIZE) 
     no_weapon_frames = 0
-    alert_active = False          # האם התרעה פעילה כרגע (מונע כפילויות)
+    alert_active = False          
+    latest_weapons = []           
     latest_event_display = None
     prev_frame_time = time.time()
 
-    # ── חלון רספונסיבי שמותאם למסך המשתמש ───────────────────────────────────
     screen_w, screen_h = get_screen_size()
     window_name = "Drone Commander Dashboard"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -223,27 +221,27 @@ def main():
         fps = 1 / max(now - prev_frame_time, 1e-6)
         prev_frame_time = now
 
-        # ── זיהוי ────────────────────────────────────────────────────────────
+        
         weapons, persons = engine.detect(frame)
 
-        # ── לוגיקת נשקים בלבד → Event ────────────────────────────────────────
+        weapon_history.append(bool(weapons))
         if weapons:
-            consecutive_weapon_frames += 1
+            latest_weapons = weapons
             no_weapon_frames = 0
         else:
-            consecutive_weapon_frames = 0
             no_weapon_frames += 1
-            # הנשק נעלם מספיק זמן → סוגרים את ההתרעה ומאפשרים אירוע חדש בהמשך
+            
             if no_weapon_frames >= FRAMES_TO_CLEAR_ALERT:
                 alert_active = False
 
-        # רושמים אירוע פעם אחת בלבד לכל הופעת נשק רציפה (ללא כפילויות)
-        if consecutive_weapon_frames >= REQUIRED_CONSECUTIVE_FRAMES and not alert_active:
+        hits_in_window = sum(weapon_history)
+
+        if hits_in_window >= DETECTION_WINDOW_HITS and not alert_active:
             event = Event(
                 drone_id=DRONE_ID,
                 timestamp=datetime.datetime.now().isoformat(),
                 location=CURRENT_LOCATION,
-                detections=weapons,
+                detections=latest_weapons,
                 event_type="alert"
             )
             save_event_to_file(event)
@@ -251,15 +249,14 @@ def main():
             latest_event_display = event
             alert_active = True
 
-        # ── ציור ─────────────────────────────────────────────────────────────
+        
         draw_detections_on_frame(frame, weapons, persons)
         final_display = draw_dashboard(frame, latest_event_display, fps,
                                        len(persons), len(weapons))
 
-        # ── התאמת גודל החלון למסך פעם אחת, תוך שמירה על יחס הגובה-רוחב ──────────
         if not window_initialized:
             dh, dw = final_display.shape[:2]
-            margin = 0.9  # להשאיר מקום לשורת המשימות ולמסגרת החלון
+            margin = 0.9  
             scale = min(screen_w * margin / dw, screen_h * margin / dh, 1.0)
             cv2.resizeWindow(window_name, int(dw * scale), int(dh * scale))
             window_initialized = True

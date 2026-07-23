@@ -15,10 +15,8 @@ class MongoDBClient:
         """מנסה להתחבר לשרת הענן"""
         print("☁️ Connecting to MongoDB Atlas...")
         try:
-            # timeoutMS=5000 אומר שאם תוך 5 שניות אין חיבור - הוא מוותר
             self.client = MongoClient(self.uri, serverSelectionTimeoutMS=5000)
             
-            # בדיקת חיבור מהירה (פינג)
             self.client.admin.command('ping')
             
             self.db = self.client[self.db_name]
@@ -33,10 +31,9 @@ class MongoDBClient:
     def insert_event(self, event_dict: dict):
         """שולח את האירוע לענן"""
         if not self.is_connected:
-            return # אם אין חיבור, לא מנסים אפילו
+            return
 
         try:
-            # MongoDB מוסיף אוטומטית שדה _id ייחודי
             result = self.collection.insert_one(event_dict)
             print(f"📡 Uploaded to Cloud. ID: {result.inserted_id}")
         except Exception as e:

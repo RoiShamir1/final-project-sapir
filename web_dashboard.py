@@ -5,7 +5,7 @@ import time
 import os
 import plotly.express as px
 
-# --- הגדרות ---
+# הגדרות 
 LOG_FILE = "events_log.json"
 st.set_page_config(
     page_title="Drone Command Center",
@@ -18,7 +18,7 @@ def load_data():
         return []
     
     data = []
-    # פתיחת הקובץ עם מנגנון להתמודדות עם שגיאות קריאה
+    
     with open(LOG_FILE, 'r', encoding='utf-8') as f:
         for line in f:
             try:
@@ -27,7 +27,7 @@ def load_data():
                 
                 event = json.loads(line)
                 
-                # מוודאים שקיבלנו מילון תקין
+                
                 if not isinstance(event, dict):
                     continue
                 
@@ -42,29 +42,29 @@ def load_data():
                 }
                 data.append(flat_event)
             except Exception:
-                # אם שורה אחת פגומה, מדלגים עליה ולא קורסים
+                
                 continue
     return data
 
-# --- כותרת הדשבורד ---
+
 st.title("🦅 Argus Drone - Command Center")
 st.markdown("Real-time surveillance and threat detection dashboard")
 
-# --- מנגנון רענון אוטומטי ---
+
 if st.button('🔄 Refresh Data'):
     st.rerun()
 
-# --- טעינת הנתונים ---
+
 raw_data = load_data()
 
 if raw_data:
     df = pd.DataFrame(raw_data)
     
-    # המרת עמודת הזמן לפורמט תקין
-    df['Time'] = pd.to_datetime(df['Time'])
-    df = df.sort_values(by='Time', ascending=False) # הכי חדש למעלה
 
-    # --- מדדים עיקריים (KPIs) ---
+    df['Time'] = pd.to_datetime(df['Time'])
+    df = df.sort_values(by='Time', ascending=False) 
+
+
     col1, col2, col3, col4 = st.columns(4)
     
     total_events = len(df)
@@ -76,26 +76,26 @@ if raw_data:
     col3.metric("Active Threats", unique_threats, delta_color="inverse")
     col4.metric("Drone Status", "ONLINE", delta_color="normal")
 
-    # --- מפה וטבלה ---
+    
     col_map, col_list = st.columns([1, 2])
 
     with col_map:
         st.subheader("📍 Threat Map")
-        # Streamlit מחפש אוטומטית עמודות lat/lon
+        
         st.map(df[['lat', 'lon']])
 
     with col_list:
         st.subheader("📋 Event Log")
-        # עיצוב הטבלה: צביעת שורות של התראות
+        
         st.dataframe(
             df[['Time', 'Drone ID', 'Threats', 'Confidence']],
             use_container_width=True,
             hide_index=True
         )
 
-    # --- גרף התפלגות איומים ---
+    
     st.subheader("📊 Threat Analysis")
-    # ספירה פשוטה של סוגי האיומים
+    
     all_threats = []
     for threats in df['Threats']:
         all_threats.extend(threats.split(", "))
@@ -107,6 +107,6 @@ else:
     st.warning("Waiting for data... Ensure the drone client is running.")
     st.info(f"Looking for log file at: {os.path.abspath(LOG_FILE)}")
 
-# --- ריענון אוטומטי כל 2 שניות ---
+
 time.sleep(2)
 st.rerun()

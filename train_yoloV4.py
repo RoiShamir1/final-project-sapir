@@ -9,14 +9,14 @@ if __name__ == '__main__':
     dataset = version.download("yolov11")
                 
 
-    # ─── 2. אימון ────────────────────────────────────────────────────────────
-    model = YOLO("yolo11n.pt")                    # nano — הכי מהיר על RTX 3050
+    
+    model = YOLO("yolo11n.pt")                
 
     model.train(
         data=f"{dataset.location}/data.yaml",
         epochs=30,
         imgsz=640,
-        device=0,                                 # GPU
+        device=0,                             
         batch=8,
         name="drone_v4",
     )

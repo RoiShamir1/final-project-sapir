@@ -1,6 +1,5 @@
 import cv2
 
-# הכתובת המעודכנת של שרת ה-MonaServer המקומי שלך ב-Wi-Fi
 rtmp_url = "rtmp://10.186.183.143/live/argus"
 
 print("⏳ מנסה להתחבר לזרם הווידאו מהרחפן...")
@@ -18,10 +17,8 @@ while True:
         print("⚠️ איבדנו את החיבור לרחפן.")
         break
 
-    # הצגת הווידאו החי
     cv2.imshow("Argus - Live Drone Feed", frame)
 
-    # סגירת החלון בלחיצה על האות q במקלדת (כשהחלון מסומן)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
